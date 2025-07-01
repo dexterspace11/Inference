@@ -1,87 +1,92 @@
-# ---------------- INN: Inference Neural Network ----------------
+# ------------------- INN: Inference Neural Network from CNN-EQIC Clusters -------------------
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import Ridge
-from sklearn.metrics.pairwise import euclidean_distances
+import os
+from sklearn.linear_model import LinearRegression
 from openpyxl import load_workbook
-import re
 
 st.set_page_config(page_title="INN - Cluster Inference Engine", layout="wide")
-st.title("🧠 INN: Inference Neural Network from CNN-EQIC Clusters")
+st.title("🧠 INN: Inference Neural Network from CNN-EQIC Cluster Output")
 
-# --- Load CNN-EQIC Excel File ---
-st.subheader("Step 1: Load CNN-EQIC Cluster Excel File")
-cluster_file = st.file_uploader("Upload CNN-EQIC Excel Output", type="xlsx")
+# Upload cluster Excel output
+eu_file = st.file_uploader("Upload CNN-EQIC Cluster Excel Output (.xlsx)", type=["xlsx"])
 
-if cluster_file:
-    wb = load_workbook(cluster_file, data_only=True)
-    sheetnames = wb.sheetnames
-    if "Centroids" not in sheetnames:
-        st.error("Invalid file: 'Centroids' sheet not found.")
+if eu_file:
+    wb = load_workbook(eu_file, data_only=True)
+    sheet_names = wb.sheetnames
+
+    # Load centroid data
+    if "Centroids" not in sheet_names:
+        st.error("Missing 'Centroids' sheet in the uploaded file.")
     else:
-        df_centroids = pd.read_excel(cluster_file, sheet_name="Centroids")
-        cluster_count = df_centroids.shape[0]
+        centroids_df = pd.read_excel(eu_file, sheet_name="Centroids")
+        cluster_data = {}
 
-        # Detect available variables
-        feature_names = df_centroids.columns.tolist()
-        base_vars = sorted(set(re.sub(r'_t\d+$', '', f) for f in feature_names))
+        for sheet in sheet_names:
+            if sheet.startswith("Cluster_") and sheet.endswith("RawData"):
+                cluster_id = int(sheet.split("_")[1])
+                cluster_data[cluster_id] = pd.read_excel(eu_file, sheet_name=sheet)
 
-        # --- Load New Data with Missing Variable ---
-        st.subheader("Step 2: Upload New Input Data (with 1 missing variable)")
-        new_data_file = st.file_uploader("Upload New Excel or CSV File", type=["xlsx", "csv"], key="newdata")
+        all_columns = centroids_df.columns.tolist()
+        variable_bases = sorted(set(col.rsplit("_t", 1)[0] for col in all_columns))
 
-        if new_data_file:
-            df_new = pd.read_csv(new_data_file) if new_data_file.name.endswith(".csv") else pd.read_excel(new_data_file)
-            df_new = df_new.copy()
+        missing_variable = st.selectbox("Select the variable to infer", variable_bases)
+        time_steps = sorted([int(col.split("_t")[-1]) for col in all_columns if col.startswith(missing_variable)])
 
-            st.subheader("Step 3: Select Variable to Infer")
-            possible_missing = [col for col in base_vars if all(f"{col}_t0" not in df_new.columns for col in [col])]
-            selected_missing = st.selectbox("Select the missing variable to infer:", base_vars)
+        input_file = st.file_uploader("Upload new data with missing variable", type=["xlsx", "csv"])
 
-            if selected_missing:
-                # Build expanded columns for selected missing variable
-                missing_cols = [f for f in feature_names if f.startswith(selected_missing + "_t")]
-                input_cols = [col for col in feature_names if col not in missing_cols]
+        if input_file:
+            df_input = pd.read_csv(input_file) if input_file.name.endswith(".csv") else pd.read_excel(input_file)
 
-                if all(col in df_new.columns for col in input_cols):
-                    st.success(f"✅ All input columns found for inference: {input_cols}")
-                    
-                    # Step 1: Match new data to closest cluster centroid
-                    X_input = df_new[input_cols].values
-                    X_centroids = df_centroids[input_cols].values
-                    distances = euclidean_distances(X_input, X_centroids)
-                    best_clusters = np.argmin(distances, axis=1)
+            # Check missing columns
+            required_features = [f"{missing_variable}_t{t}" for t in time_steps]
+            input_features = [col for col in df_input.columns if col not in required_features and col in all_columns]
 
-                    # Step 2: Load raw data from matched clusters and train model
-                    predicted_values = []
-                    for i, row in enumerate(X_input):
-                        cluster_idx = best_clusters[i]
-                        sheet_name = f"Cluster_{cluster_idx}_RawData"
-                        if sheet_name not in sheetnames:
-                            st.error(f"Missing sheet: {sheet_name} in Excel file.")
-                            continue
-                        df_cluster = pd.read_excel(cluster_file, sheet_name=sheet_name)
+            missing_cols = [f for f in required_features if f in df_input.columns]
+            if missing_cols:
+                st.warning(f"The following columns for the target variable exist: {missing_cols}. They will be overwritten.")
 
-                        if all(col in df_cluster.columns for col in input_cols + missing_cols):
-                            model = Ridge(alpha=1.0)
-                            X_train = df_cluster[input_cols].values
-                            y_train = df_cluster[missing_cols].mean(axis=1).values
-                            model.fit(X_train, y_train)
-                            pred = model.predict([row])[0]
-                            predicted_values.append(pred)
-                        else:
-                            st.warning(f"Missing required columns in {sheet_name}.")
-                            predicted_values.append(np.nan)
+            if len(input_features) == 0:
+                st.error("Some input columns are missing in your new data.")
+            else:
+                X_input = df_input[input_features]
+                inferred_vals = []
 
-                    df_new[f"{selected_missing}_inferred"] = predicted_values
+                for idx, row in X_input.iterrows():
+                    x = row.values.reshape(1, -1)
+                    distances = [np.linalg.norm(x - centroids_df.drop(columns=required_features).iloc[c].values.reshape(1, -1)) for c in range(len(centroids_df))]
+                    best_cluster = np.argmin(distances)
+                    cluster_df = cluster_data.get(best_cluster)
 
-                    st.subheader("📈 Inference Results")
-                    st.dataframe(df_new[[*input_cols, f"{selected_missing}_inferred"]])
+                    if cluster_df is None:
+                        inferred_vals.append([np.nan] * len(time_steps))
+                        continue
 
-                    st.download_button("📥 Download Inference Result as CSV",
-                                       data=df_new.to_csv(index=False).encode('utf-8'),
-                                       file_name="inference_result.csv",
-                                       mime="text/csv")
-                else:
-                    st.error("Some input columns are missing in your new data.")
+                    # Drop rows with missing required columns
+                    cluster_df_clean = cluster_df[input_features + required_features].dropna()
+                    if len(cluster_df_clean) == 0:
+                        inferred_vals.append([np.nan] * len(time_steps))
+                        continue
+
+                    y_pred_steps = []
+                    for t in time_steps:
+                        target_col = f"{missing_variable}_t{t}"
+                        model = LinearRegression().fit(cluster_df_clean[input_features], cluster_df_clean[target_col])
+                        pred = model.predict(x)[0]
+                        y_pred_steps.append(pred)
+                    inferred_vals.append(y_pred_steps)
+
+                for i, t in enumerate(time_steps):
+                    df_input[f"{missing_variable}_t{t}"] = [vals[i] for vals in inferred_vals]
+
+                st.success("Inference completed.")
+                st.dataframe(df_input.head())
+
+                save_path = st.text_input("Enter Excel file path to save output", value="INN_inference_output.xlsx")
+                if st.button("Save Inferred Output"):
+                    try:
+                        df_input.to_excel(save_path, index=False)
+                        st.success(f"File saved to {save_path}")
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
