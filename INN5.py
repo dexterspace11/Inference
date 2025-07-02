@@ -1,4 +1,4 @@
-# ---------------- Full CNN-EQIC + INN Streamlit App ----------------
+# ---------------- Full CNN-EQIC + INN Streamlit App (Robust Variable Checks) ----------------
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -173,7 +173,7 @@ st.title("📊 CNN-EQIC Clustering & 🧠 INN Missing Variable Inference")
 
 tab = st.tabs(["CNN-EQIC Clustering", "INN Inference"])
 
-# --------------- CNN-EQIC Clustering Tab ---------------
+# ---------------- CNN-EQIC Clustering Tab ----------------
 with tab[0]:
     st.header("CNN-EQIC: Advanced Clustering with Scaler Export")
 
@@ -264,8 +264,8 @@ with tab[0]:
                     for r in dataframe_to_rows(df_assign, index=False, header=True):
                         ws3.append(r)
                     ws4 = wb.create_sheet("Centroids")
-                    df_centroids_export = pd.DataFrame(centroids, columns=expanded_feature_names)
-                    for r in dataframe_to_rows(df_centroids_export, index=False, header=True):
+                    df_centroids = pd.DataFrame(centroids, columns=expanded_feature_names)
+                    for r in dataframe_to_rows(df_centroids, index=False, header=True):
                         ws4.append(r)
                     # Add raw data by cluster
                     for i in range(k):
@@ -288,7 +288,7 @@ with tab[0]:
                         for col_cells in ws_iter.columns:
                             length = max(len(str(cell.value) or "") for cell in col_cells)
                             ws_iter.column_dimensions[col_cells[0].column_letter].width = length + 2
-                    # Provide download button
+                    # Save to bytes buffer and provide download button:
                     excel_io = io.BytesIO()
                     wb.save(excel_io)
                     excel_io.seek(0)
@@ -299,7 +299,7 @@ with tab[0]:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
-# --------------- INN Inference Tab ---------------
+# ---------------- INN Inference Tab ----------------
 with tab[1]:
     st.header("INN Inference: Missing Variable Imputation")
 
@@ -310,41 +310,52 @@ with tab[1]:
 
     if cnn_eqic_file and raw_test_file and output_path:
         try:
-            # Load centroids and scaler
+            # Load centroids and scaler from CNN-EQIC file
             df_centroids = pd.read_excel(cnn_eqic_file, sheet_name="Centroids")
             scaler = load_scaler_from_excel(cnn_eqic_file)
 
             # Load raw test data
             df_test = pd.read_csv(raw_test_file) if raw_test_file.name.endswith(".csv") else pd.read_excel(raw_test_file)
 
-            # Get base features from centroid columns (strip lag suffixes)
-            base_features = sorted(set(col.rsplit('_t', 1)[0] for col in df_centroids.columns))
+            centroid_cols = df_centroids.columns.tolist()
+            base_features = sorted(set(col.rsplit('_t', 1)[0] for col in centroid_cols))
 
-            # Create lagged features from raw test data to match centroid columns
+            st.write("### Variables in CNN-EQIC centroids (lagged features):")
+            st.write(base_features)
+
+            st.write("### Variables in raw test data:")
+            st.write(list(df_test.columns))
+
+            # Detect missing base features in test data (required for lagging)
+            missing_base_features = [feat for feat in base_features if feat not in df_test.columns]
+
+            if missing_base_features:
+                st.error(f"❌ Missing base features in test data: {missing_base_features}")
+                st.info("Please ensure raw test data includes these variables before running inference.")
+                st.stop()
+
+            # Create lagged features to match centroid features
             df_test_lagged = create_lagged_features(df_test, base_features, window_size)
 
-            # Detect missing variables: base features missing in raw test data
-            missing_candidates = [feat for feat in base_features if feat not in df_test.columns]
+            st.write("### Columns in lagged test data:")
+            st.write(list(df_test_lagged.columns))
 
-            if len(missing_candidates) == 0:
-                st.info("✅ No missing variable detected for inference. All base features are present in the test data.")
+            # Check lagged columns presence
+            missing_lagged_cols = [col for col in centroid_cols if col not in df_test_lagged.columns]
+            if missing_lagged_cols:
+                st.error(f"❌ Lagged columns missing in lagged test data: {missing_lagged_cols}")
+                st.info("Check the window size and raw test data completeness.")
                 st.stop()
 
-            # Let user select which missing variable to infer
-            missing_var = st.selectbox("Select the missing variable to infer", missing_candidates)
-            st.success(f"Missing variable selected for inference: {missing_var}")
+            st.success("✅ All required features are present for inference.")
 
-            # Prepare input and target columns for Linear Regression
-            used_columns = [col for col in df_centroids.columns if not col.startswith(missing_var + '_t')]
-            target_columns = [col for col in df_centroids.columns if col.startswith(missing_var + '_t')]
+            # Let user select which variable to infer:
+            missing_candidates = []  # since all present, we allow user to pick any base feature
+            missing_var = st.selectbox("Select the missing variable to infer", base_features)
 
-            # Check if input columns exist in lagged test data
-            missing_inputs = set(used_columns) - set(df_test_lagged.columns)
-            if missing_inputs:
-                st.error(f"Required input columns missing from lagged test data: {missing_inputs}")
-                st.stop()
+            used_columns = [col for col in centroid_cols if not col.startswith(missing_var + '_t')]
+            target_columns = [col for col in centroid_cols if col.startswith(missing_var + '_t')]
 
-            # Perform inference (Linear Regression) for each lag column of missing variable
             inferred_data = df_test_lagged.copy()
             for target_col in target_columns:
                 model = LinearRegression()
@@ -354,7 +365,6 @@ with tab[1]:
             st.subheader("✅ Inferred Values (Scaled)")
             st.write(inferred_data[target_columns].head())
 
-            # Try inverse scaling inferred values to original scale
             try:
                 inferred_scaled = inferred_data[target_columns].values
                 inferred_unscaled = scaler.inverse_transform(inferred_scaled)
@@ -365,7 +375,7 @@ with tab[1]:
             except Exception as scaler_err:
                 st.warning(f"⚠️ Inverse transform skipped: {scaler_err}")
 
-            # Save raw test data + inferred missing variable (scaled & unscaled) to Excel
+            # Save results to Excel file
             wb = openpyxl.Workbook()
             ws_raw = wb.active
             ws_raw.title = "Raw Test Data"
