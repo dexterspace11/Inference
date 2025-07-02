@@ -1,4 +1,4 @@
-# ---------------- Full CNN-EQIC + INN Streamlit App (with fix for missing variable logic) ----------------
+# ---------------- Full CNN-EQIC + INN Streamlit App (Fixed CNN-EQIC Tab) ----------------
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -163,6 +163,84 @@ st.set_page_config(page_title="CNN-EQIC + INN", layout="wide")
 st.title("📊 CNN-EQIC Clustering & 🧠 INN Inference")
 tabs = st.tabs(["CNN-EQIC Clustering", "INN Inference"])
 
+with tabs[0]:
+    st.header("CNN-EQIC Clustering: Hybrid Neural Network Clustering")
+    upload_train = st.file_uploader("Upload training dataset (CSV or Excel)", type=["csv", "xlsx"], key="train")
+    if upload_train:
+        df = pd.read_csv(upload_train) if upload_train.name.endswith(".csv") else pd.read_excel(upload_train)
+        st.dataframe(df.head())
+
+        numerical_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        default_selection = numerical_cols[:min(4, len(numerical_cols))]
+        selected = st.multiselect("Select features for clustering", numerical_cols, default=default_selection)
+
+        window_size = st.slider("Window size (lag)", 2, 20, 5)
+        if len(selected) >= 2:
+            clean = SimpleImputer().fit_transform(df[selected])
+            scaler = MinMaxScaler().fit(clean)
+            scaled = scaler.transform(clean)
+
+            net = HybridNeuralNetwork()
+            for i in range(window_size, len(scaled)):
+                pattern = scaled[i - window_size:i].flatten()
+                net.process_input(pattern)
+
+            patterns = [p for e in net.episodic_memory.episodes.values() for p in e['patterns']]
+            if patterns:
+                patterns = np.array(patterns)
+                feature_names = [f"{feat}_t{t}" for t in range(window_size) for feat in selected]
+
+                k = st.slider("Number of clusters", 2, min(10, len(patterns)), 5)
+                kmeans = KMeans(n_clusters=k, random_state=42).fit(patterns)
+                labels = kmeans.labels_
+                centroids = kmeans.cluster_centers_
+
+                st.metric("Silhouette", f"{silhouette_score(patterns, labels):.3f}")
+                st.metric("Davies-Bouldin", f"{davies_bouldin_score(patterns, labels):.3f}")
+                st.metric("Calinski-Harabasz", f"{calinski_harabasz_score(patterns, labels):.1f}")
+
+                st.subheader("PCA Cluster Projection")
+                pca = PCA(n_components=2).fit_transform(patterns)
+                df_pca = pd.DataFrame(pca, columns=["PC1", "PC2"])
+                df_pca["Cluster"] = labels
+                fig, ax = plt.subplots()
+                sns.scatterplot(data=df_pca, x="PC1", y="PC2", hue="Cluster", palette="tab10", ax=ax)
+                st.pyplot(fig)
+
+                descs = generate_cluster_descriptions(centroids, feature_names)
+                st.subheader("Cluster Descriptions")
+                for desc in descs:
+                    st.markdown(f"- {desc}")
+
+                st.subheader("Comparative Summary")
+                st.text(generate_comparative_summary(centroids, feature_names))
+
+                if st.button("Export Results to Excel"):
+                    wb = openpyxl.Workbook()
+                    ws1 = wb.active
+                    ws1.title = "Cluster Descriptions"
+                    for line in descs:
+                        ws1.append([line])
+                    ws2 = wb.create_sheet("Centroids")
+                    df_centroids = pd.DataFrame(centroids, columns=feature_names)
+                    for r in dataframe_to_rows(df_centroids, index=False, header=True):
+                        ws2.append(r)
+                    ws3 = wb.create_sheet("Cluster Labels")
+                    df_labels = pd.DataFrame({"Index": range(len(labels)), "Cluster": labels})
+                    for r in dataframe_to_rows(df_labels, index=False, header=True):
+                        ws3.append(r)
+                    scaler_io = io.BytesIO()
+                    joblib.dump(scaler, scaler_io)
+                    scaler_b64 = base64.b64encode(scaler_io.getvalue()).decode("utf-8")
+                    ws4 = wb.create_sheet("Scaler")
+                    chunk_size = 1000
+                    for i in range(0, len(scaler_b64), chunk_size):
+                        ws4.append([scaler_b64[i:i+chunk_size]])
+                    excel_io = io.BytesIO()
+                    wb.save(excel_io)
+                    excel_io.seek(0)
+                    st.download_button("Download Clustering Results", data=excel_io, file_name="CNN_EQIC_output.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 with tabs[1]:
     st.header("INN Inference: Missing Variable Imputation")
     cnn_eqic_file = st.file_uploader("Upload CNN-EQIC Excel Output", type=["xlsx"])
@@ -183,7 +261,7 @@ with tabs[1]:
             required_inputs = [feat for feat in base_features if feat != missing_var]
             missing_required = [feat for feat in required_inputs if feat not in df_test.columns]
             if missing_required:
-                st.error(f"❌ Missing required variables: {missing_required}")
+                st.error(f"\u274c Missing required variables: {missing_required}")
                 st.stop()
 
             df_test_lagged = create_lagged_features(df_test, base_features, window_size)
@@ -210,8 +288,7 @@ with tabs[1]:
             for r in dataframe_to_rows(inferred_data, index=False, header=True):
                 ws2.append(r)
             wb.save(output_path)
-            st.success(f"📁 Output saved: {output_path}")
+            st.success(f"\ud83d\udcc1 Output saved: {output_path}")
 
         except Exception as e:
-            st.error(f"❌ Error: {e}")
-
+            st.error(f"\u274c Error: {e}")
