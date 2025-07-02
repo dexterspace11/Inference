@@ -3,27 +3,31 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import base64
+import io
 from sklearn.linear_model import LinearRegression
 from openpyxl import load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-import io
-import base64
+import os
 
 st.set_page_config(page_title="INN - Cluster-Based Inference Engine", layout="wide")
 st.title("🧠 INN - Inference Neural Network for Missing Variable Imputation")
 
-# ----------- Function to Load Scaler from Excel -----------
-def load_scaler_from_excel(file) -> joblib.BaseEstimator:
-    # Read the "Scaler" sheet as lines of base64 string
-    df_scaler = pd.read_excel(file, sheet_name="Scaler", header=None)
-    b64_str = "".join(df_scaler[0].tolist())  # Concatenate all rows
-    scaler_bytes = base64.b64decode(b64_str)
+# ---------------- Helper: Load Scaler from 'Scaler' sheet ----------------
+def load_scaler_from_excel(file_path):
+    wb = load_workbook(file_path, data_only=True)
+    if "Scaler" not in wb.sheetnames:
+        raise ValueError("Scaler sheet not found in Excel file.")
+    scaler_sheet = wb["Scaler"]
+    b64_chunks = [str(cell[0].value) for cell in scaler_sheet.iter_rows(values_only=True) if cell[0].value]
+    scaler_b64 = "".join(b64_chunks)
+    scaler_bytes = base64.b64decode(scaler_b64)
     scaler = joblib.load(io.BytesIO(scaler_bytes))
     return scaler
 
 # ---------------- File Upload ----------------
 st.header("Step 1: Upload CNN-EQIC Excel Output")
-cluster_file = st.file_uploader("Upload CNN-EQIC Excel output (with full variable data and scaler)", type=["xlsx"])
+cluster_file = st.file_uploader("Upload CNN-EQIC Excel output (with full variable data)", type=["xlsx"])
 
 st.header("Step 2: Upload Data with Missing Variable")
 missing_file = st.file_uploader("Upload new data with one missing variable", type=["xlsx"])
@@ -33,9 +37,6 @@ output_path = st.text_input("Enter full path to save inference output (e.g., C:/
 
 if cluster_file and missing_file and output_path:
     try:
-        # Load scaler from the CNN-EQIC Excel file
-        scaler = load_scaler_from_excel(cluster_file)
-
         # Load centroids sheet as training data
         df_centroids = pd.read_excel(cluster_file, sheet_name="Centroids")
 
@@ -65,31 +66,27 @@ if cluster_file and missing_file and output_path:
             st.error(f"❌ Required input columns are missing from your new data: {missing_inputs}")
             st.stop()
 
-        # Train model for each time step of the missing variable and predict
+        # Train model for each time step of the missing variable
         inferred_data = df_input.copy()
         for target_col in target_columns:
             model = LinearRegression()
             model.fit(df_centroids[used_columns], df_centroids[target_col])
             inferred_data[target_col] = model.predict(df_input[used_columns])
 
-        # Prepare full feature matrix for inverse_transform
-        full_data_scaled = inferred_data.copy()
-
-        # Ensure column order matches scaler input
-        full_data_scaled = full_data_scaled[df_centroids.columns]
-
-        # Use scaler.inverse_transform to get original scale values
-        inversed = scaler.inverse_transform(full_data_scaled)
-
-        # Create DataFrame with original columns
-        df_inversed = pd.DataFrame(inversed, columns=df_centroids.columns)
-
-        # Replace inferred missing variable columns with inverse transformed values
-        for col in target_columns:
-            inferred_data[col] = df_inversed[col]
-
-        st.subheader("✅ Inferred Values (Inverse Transformed to Original Scale)")
+        st.subheader("✅ Inferred Values (Scaled)")
         st.write(inferred_data[target_columns].head())
+
+        # Load and apply inverse transform using saved scaler
+        try:
+            scaler = load_scaler_from_excel(cluster_file)
+            inferred_scaled = inferred_data[target_columns].values
+            inferred_unscaled = scaler.inverse_transform(inferred_scaled)
+            for i, col in enumerate(target_columns):
+                inferred_data[col + "_unscaled"] = inferred_unscaled[:, i]
+            st.subheader("🎯 Inferred Values (Inverse Transformed)")
+            st.write(inferred_data[[col + "_unscaled" for col in target_columns]].head())
+        except Exception as scaler_err:
+            st.warning(f"⚠️ Inverse transform skipped: {scaler_err}")
 
         # Save to Excel
         wb = load_workbook(missing_file)
