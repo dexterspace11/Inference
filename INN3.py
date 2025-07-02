@@ -19,7 +19,8 @@ def load_scaler_from_excel(file_path):
     if "Scaler" not in wb.sheetnames:
         raise ValueError("Scaler sheet not found in Excel file.")
     scaler_sheet = wb["Scaler"]
-    b64_chunks = [str(cell[0].value) for cell in scaler_sheet.iter_rows(values_only=True) if cell[0].value]
+    # FIXED: cell[0] is already the value (because of values_only=True)
+    b64_chunks = [cell[0] for cell in scaler_sheet.iter_rows(values_only=True) if cell[0]]
     scaler_b64 = "".join(b64_chunks)
     scaler_bytes = base64.b64decode(scaler_b64)
     scaler = joblib.load(io.BytesIO(scaler_bytes))
