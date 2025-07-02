@@ -149,11 +149,12 @@ def load_scaler_from_excel(file_obj):
     if "Scaler" not in wb.sheetnames:
         raise ValueError("Scaler sheet not found in Excel file.")
     scaler_sheet = wb["Scaler"]
-    b64_chunks = [str(cell[0].value) for cell in scaler_sheet.iter_rows(values_only=True) if cell[0].value]
+    b64_chunks = [str(row[0]) for row in scaler_sheet.iter_rows(values_only=True) if row[0]]
     scaler_b64 = "".join(b64_chunks)
     scaler_bytes = base64.b64decode(scaler_b64)
     scaler = joblib.load(io.BytesIO(scaler_bytes))
     return scaler
+
 
 # ---------------- Helper: Create lagged features from raw test data ----------------
 def create_lagged_features(df, features, window_size):
