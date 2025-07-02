@@ -1,4 +1,5 @@
-# ---------------- Full CNN-EQIC + INN Streamlit App ----------------
+# ---------------- Full CNN-EQIC + INN Streamlit App (Updated with Manual Missing Variable Selection) ----------------
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -155,7 +156,6 @@ def load_scaler_from_excel(file_obj):
     scaler = joblib.load(io.BytesIO(scaler_bytes))
     return scaler
 
-
 # ---------------- Helper: Create lagged features from raw test data ----------------
 def create_lagged_features(df, features, window_size):
     lagged_data = {}
@@ -168,18 +168,13 @@ def create_lagged_features(df, features, window_size):
     lagged_df.reset_index(drop=True, inplace=True)
     return lagged_df
 
-# ---------------- Streamlit App ----------------
+# ---------------- Streamlit App Config ----------------
 st.set_page_config(page_title="CNN-EQIC + INN Integrated App", layout="wide")
-st.title("📊 CNN-EQIC Clustering & 🧠 INN Missing Variable Inference")
+st.title("\U0001F4CA CNN-EQIC Clustering & \U0001F9E0 INN Missing Variable Inference")
 
 tab = st.tabs(["CNN-EQIC Clustering", "INN Inference"])
 
-# ---------------- Full CNN-EQIC + INN Streamlit App (Updated with Manual Missing Variable Selection) ----------------
-
-[The code here is identical to your provided code, with only one key enhancement:]
-
-# ------- Inside the INN tab, replace the automatic detection with manual selection -------
-
+# ---------------- INN Tab with Manual Missing Variable Selection ----------------
 with tab[1]:
     st.header("INN Inference: Missing Variable Imputation")
 
@@ -253,6 +248,3 @@ with tab[1]:
 
         except Exception as e:
             st.error(f"❌ An error occurred: {e}")
-
-
-
