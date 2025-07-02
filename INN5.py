@@ -144,10 +144,6 @@ def generate_comparative_summary(centroids, feature_names):
     return "\n".join(lines)
 
 # ---------------- Helper: Load Scaler from 'Scaler' sheet ----------------
-import base64
-import io
-import openpyxl
-
 def load_scaler_from_excel(file_obj):
     wb = openpyxl.load_workbook(file_obj, data_only=True)
     if "Scaler" not in wb.sheetnames:
@@ -254,47 +250,53 @@ with tab[0]:
                 """)
 
                 if st.button("Export CNN-EQIC Results and Scaler to Excel"):
-                    export_path = st.text_input("Enter path to save CNN-EQIC output Excel (e.g. C:/path/to/CNN_EQIC_output.xlsx)", key="cnn_export_path")
-                    if export_path:
-                        wb = openpyxl.Workbook()
-                        ws1 = wb.active
-                        ws1.title = "Cluster Descriptions"
-                        for line in cluster_descriptions:
-                            ws1.append([line])
-                        ws2 = wb.create_sheet("Comparative Summary")
-                        for line in comp_summary.split("\n"):
-                            ws2.append([line])
-                        ws3 = wb.create_sheet("Cluster Labels")
-                        df_assign = pd.DataFrame({"Pattern Index": range(len(labels)), "Cluster": labels})
-                        for r in dataframe_to_rows(df_assign, index=False, header=True):
-                            ws3.append(r)
-                        ws4 = wb.create_sheet("Centroids")
-                        df_centroids = pd.DataFrame(centroids, columns=expanded_feature_names)
-                        for r in dataframe_to_rows(df_centroids, index=False, header=True):
-                            ws4.append(r)
-                        # Add raw data by cluster
-                        for i in range(k):
-                            cluster_data = patterns[labels == i]
-                            df_cluster = pd.DataFrame(cluster_data, columns=expanded_feature_names)
-                            ws = wb.create_sheet(f"Raw Cluster {i}")
-                            for r in dataframe_to_rows(df_cluster, index=False, header=True):
-                                ws.append(r)
-                        # Save scaler as base64 string in a new sheet "Scaler"
-                        scaler_bytes_io = io.BytesIO()
-                        joblib.dump(scaler, scaler_bytes_io)
-                        scaler_bytes = scaler_bytes_io.getvalue()
-                        scaler_b64 = base64.b64encode(scaler_bytes).decode('utf-8')
-                        ws_scaler = wb.create_sheet("Scaler")
-                        chunk_size = 1000
-                        for i in range(0, len(scaler_b64), chunk_size):
-                            ws_scaler.append([scaler_b64[i:i+chunk_size]])
-                        # Auto-adjust column widths
-                        for ws_iter in wb.worksheets:
-                            for col_cells in ws_iter.columns:
-                                length = max(len(str(cell.value) or "") for cell in col_cells)
-                                ws_iter.column_dimensions[col_cells[0].column_letter].width = length + 2
-                        wb.save(export_path)
-                        st.success(f"Exported CNN-EQIC results and scaler to {export_path}")
+                    wb = openpyxl.Workbook()
+                    ws1 = wb.active
+                    ws1.title = "Cluster Descriptions"
+                    for line in cluster_descriptions:
+                        ws1.append([line])
+                    ws2 = wb.create_sheet("Comparative Summary")
+                    for line in comp_summary.split("\n"):
+                        ws2.append([line])
+                    ws3 = wb.create_sheet("Cluster Labels")
+                    df_assign = pd.DataFrame({"Pattern Index": range(len(labels)), "Cluster": labels})
+                    for r in dataframe_to_rows(df_assign, index=False, header=True):
+                        ws3.append(r)
+                    ws4 = wb.create_sheet("Centroids")
+                    df_centroids = pd.DataFrame(centroids, columns=expanded_feature_names)
+                    for r in dataframe_to_rows(df_centroids, index=False, header=True):
+                        ws4.append(r)
+                    # Add raw data by cluster
+                    for i in range(k):
+                        cluster_data = patterns[labels == i]
+                        df_cluster = pd.DataFrame(cluster_data, columns=expanded_feature_names)
+                        ws = wb.create_sheet(f"Raw Cluster {i}")
+                        for r in dataframe_to_rows(df_cluster, index=False, header=True):
+                            ws.append(r)
+                    # Save scaler as base64 string in a new sheet "Scaler"
+                    scaler_bytes_io = io.BytesIO()
+                    joblib.dump(scaler, scaler_bytes_io)
+                    scaler_bytes = scaler_bytes_io.getvalue()
+                    scaler_b64 = base64.b64encode(scaler_bytes).decode('utf-8')
+                    ws_scaler = wb.create_sheet("Scaler")
+                    chunk_size = 1000
+                    for i in range(0, len(scaler_b64), chunk_size):
+                        ws_scaler.append([scaler_b64[i:i+chunk_size]])
+                    # Auto-adjust column widths
+                    for ws_iter in wb.worksheets:
+                        for col_cells in ws_iter.columns:
+                            length = max(len(str(cell.value) or "") for cell in col_cells)
+                            ws_iter.column_dimensions[col_cells[0].column_letter].width = length + 2
+                    # Instead of saving to disk, save to bytes buffer and provide download button:
+                    excel_io = io.BytesIO()
+                    wb.save(excel_io)
+                    excel_io.seek(0)
+                    st.download_button(
+                        label="Download CNN-EQIC Excel Output",
+                        data=excel_io,
+                        file_name="CNN_EQIC_output.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
 
 with tab[1]:
     st.header("INN Inference: Missing Variable Imputation")
