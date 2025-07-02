@@ -19,8 +19,7 @@ def load_scaler_from_excel(file_path):
     if "Scaler" not in wb.sheetnames:
         raise ValueError("Scaler sheet not found in Excel file.")
     scaler_sheet = wb["Scaler"]
-    # FIXED: cell[0] is already the value (because of values_only=True)
-    b64_chunks = [cell[0] for cell in scaler_sheet.iter_rows(values_only=True) if cell[0]]
+    b64_chunks = [str(cell[0].value) for cell in scaler_sheet.iter_rows(values_only=True) if cell[0]]
     scaler_b64 = "".join(b64_chunks)
     scaler_bytes = base64.b64decode(scaler_b64)
     scaler = joblib.load(io.BytesIO(scaler_bytes))
@@ -80,12 +79,28 @@ if cluster_file and missing_file and output_path:
         # Load and apply inverse transform using saved scaler
         try:
             scaler = load_scaler_from_excel(cluster_file)
-            inferred_scaled = inferred_data[target_columns].values
-            inferred_unscaled = scaler.inverse_transform(inferred_scaled)
-            for i, col in enumerate(target_columns):
-                inferred_data[col + "_unscaled"] = inferred_unscaled[:, i]
+
+            # Reconstruct full pattern with inferred values
+            all_columns = scaler.feature_names_in_ if hasattr(scaler, 'feature_names_in_') else df_centroids.columns
+            reconstructed = df_input.copy()
+            for col in target_columns:
+                reconstructed[col] = inferred_data[col]
+
+            # Ensure correct column order for inverse transform
+            reconstructed = reconstructed[[col for col in all_columns if col in reconstructed.columns]]
+
+            # Apply inverse transform
+            reconstructed_scaled = reconstructed.values
+            reconstructed_unscaled = scaler.inverse_transform(reconstructed_scaled)
+
+            # Map unscaled values only to inferred columns
+            for i, col in enumerate(reconstructed.columns):
+                if col in target_columns:
+                    inferred_data[col + "_unscaled"] = reconstructed_unscaled[:, i]
+
             st.subheader("🎯 Inferred Values (Inverse Transformed)")
             st.write(inferred_data[[col + "_unscaled" for col in target_columns]].head())
+
         except Exception as scaler_err:
             st.warning(f"⚠️ Inverse transform skipped: {scaler_err}")
 
