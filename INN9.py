@@ -29,11 +29,17 @@ if model_file and test_file and output_path:
 
         # Load centroids and expanded feature names
         df_centroids = pd.read_excel(xl, sheet_name="Centroids")
-        expanded_feature_names = [r[0] for r in pd.read_excel(xl, sheet_name="ScalerFeatures", header=None).values.tolist()]
+        scaler_features_raw = pd.read_excel(xl, sheet_name="ScalerFeatures", header=None).values.tolist()
+        expanded_feature_names = [r[0] for r in scaler_features_raw if isinstance(r[0], str)]
 
-        # Infer base variables and window size
-        base_vars = list(set([name.split("_t")[0] for name in expanded_feature_names]))
-        window_size = max([int(name.split("_t")[1]) for name in expanded_feature_names]) + 1
+        # Filter valid windowed features and infer window size
+        valid_expanded = [name for name in expanded_feature_names if "_t" in name]
+        if not valid_expanded:
+            st.error("❌ ScalerFeatures does not contain valid '_t' windowed feature names.")
+            st.stop()
+
+        base_vars = sorted(set(name.split("_t")[0] for name in valid_expanded))
+        window_size = max(int(name.split("_t")[1]) for name in valid_expanded) + 1
 
         # Load scaler from base64 string
         scaler_b64 = "".join([r[0] for r in pd.read_excel(xl, sheet_name="Scaler", header=None).values.tolist()])
@@ -47,15 +53,15 @@ if model_file and test_file and output_path:
         # Infer missing variable
         inferred_missing = list(set(base_vars) - set(test_vars))
         if len(inferred_missing) != 1:
-            missing_var = st.selectbox("Select missing variable", base_vars)
+            missing_var = st.selectbox("Select the missing variable", base_vars)
         else:
             missing_var = inferred_missing[0]
             st.success(f"🔍 Missing variable detected: **{missing_var}**")
 
-        # Prepare test data
+        # Prepare variables
         used_vars = [var for var in base_vars if var != missing_var]
-        missing_target_cols = [col for col in expanded_feature_names if col.startswith(missing_var + "_")]
-        used_expanded_cols = [col for col in expanded_feature_names if not col.startswith(missing_var + "_")]
+        missing_target_cols = [col for col in valid_expanded if col.startswith(missing_var + "_")]
+        used_expanded_cols = [col for col in valid_expanded if not col.startswith(missing_var + "_")]
 
         # Check test data validity
         if not all(var in df_test_raw.columns for var in used_vars):
@@ -74,6 +80,10 @@ if model_file and test_file and output_path:
                 window.extend(df_scaled[var].iloc[i - window_size:i].values)
             patterns.append(window)
             valid_indices.append(i)
+
+        if len(patterns) == 0:
+            st.warning("⚠️ Not enough rows to create valid windowed sequences. Try adding more rows to your test data.")
+            st.stop()
 
         df_patterns = pd.DataFrame(patterns, columns=used_expanded_cols)
 
