@@ -1,13 +1,13 @@
-# cluster_assignment_from_centroids.py
+# analyze_cluster_thresholds.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-from sklearn.metrics.pairwise import euclidean_distances
-from io import BytesIO
 
-# ------------------------ Utilities ------------------------
-def interpret(val):
+# ----------------- Utilities -----------------
+
+def interpret_level(val):
+    """Convert normalized value to qualitative label."""
     if val < 0.33:
         return "low"
     elif val < 0.66:
@@ -15,100 +15,75 @@ def interpret(val):
     else:
         return "high"
 
-def normalize(df):
-    return (df - df.min()) / (df.max() - df.min() + 1e-9)
+def extract_base_features(columns):
+    """Extract base variable names from columns like 'a_t0', 'b_t1'."""
+    return sorted(set(re.sub(r"_t\d+$", "", col) for col in columns))
 
-# ------------------------ Streamlit UI ------------------------
-st.set_page_config("Cluster Assignment", layout="wide")
-st.title("🧠 Cluster Assignment from CNN-Hybrid Model")
+def calculate_avg_by_variable(row, feature_names, base_vars):
+    """Average the time-windowed features per base variable."""
+    result = {}
+    for base in base_vars:
+        indices = [i for i, col in enumerate(feature_names) if col.startswith(base + "_t")]
+        avg_val = np.mean([row[i] for i in indices]) if indices else None
+        result[base] = avg_val
+    return result
 
-# Step 1: Upload CNN-Hybrid Excel output
-cluster_file = st.file_uploader("📁 Upload CNN-Hybrid Excel Output (with Centroids)", type=["xlsx"])
+def get_variable_thresholds(df_centroids, feature_names, base_vars, target_var):
+    """Return DataFrame showing value thresholds per variable and cluster, grouped by target level."""
+    result_rows = []
+
+    for cluster_id, row in df_centroids.iterrows():
+        avg_vals = calculate_avg_by_variable(row, feature_names, base_vars)
+        cluster_labels = {var: interpret_level(val) for var, val in avg_vals.items() if val is not None}
+        target_level = cluster_labels[target_var]
+        for var in base_vars:
+            if var == target_var:
+                continue
+            result_rows.append({
+                "Cluster": cluster_id,
+                "Target Level": target_level,
+                "Variable": var,
+                "Level": cluster_labels[var],
+                "Avg Value": round(avg_vals[var], 4)
+            })
+
+    return pd.DataFrame(result_rows)
+
+# ----------------- Streamlit App -----------------
+
+st.set_page_config("Cluster Variable Thresholds", layout="wide")
+st.title("📊 Analyze CNN-EQIC Clusters Relative to Target Variable")
+
+# Step 1: Upload CNN-EQIC Excel output
+cluster_file = st.file_uploader("📁 Upload CNN-EQIC Excel Output (must contain 'Centroids' sheet)", type=["xlsx"])
 
 if cluster_file:
     df_centroids = pd.read_excel(cluster_file, sheet_name="Centroids")
     feature_names = df_centroids.columns.tolist()
 
-    # Extract base feature names from column names like 'a_t0', 'b_t1', ...
-    base_vars = sorted(set(re.sub(r"_t\d+$", "", f) for f in feature_names))
+    base_vars = extract_base_features(feature_names)
 
     st.success("✅ Centroid data loaded.")
-    st.markdown("### 🎯 Step 2: Select target variable to relate clusters")
+    target_var = st.selectbox("🎯 Select the target variable to analyze", base_vars)
 
-    target_var = st.selectbox("Select target variable to relate to clusters", base_vars)
     input_vars = [v for v in base_vars if v != target_var]
 
-    # Build cluster profile summaries (as text)
-    centroids = df_centroids.values
-    cluster_profiles = []
-    for cluster_id, row in enumerate(centroids):
-        profile = {}
-        for base in base_vars:
-            indices = [i for i, col in enumerate(feature_names) if col.startswith(base + "_t")]
-            if not indices:
-                continue
-            avg_val = np.mean([row[i] for i in indices])
-            profile[base] = interpret(avg_val)
-        cluster_profiles.append((cluster_id, profile))
+    # Generate cluster-level summary
+    df_thresholds = get_variable_thresholds(df_centroids, feature_names, base_vars, target_var)
 
-    # Display human-readable summary
-    st.subheader("📘 Cluster Summary (relative to target)")
-    summary_data = []
-    for cid, prof in cluster_profiles:
-        prof_copy = prof.copy()
-        target_level = prof_copy.pop(target_var)
-        row = {'Cluster': cid, f'{target_var}_level': target_level}
-        row.update({k: v for k, v in prof_copy.items()})
-        summary_data.append(row)
-    df_summary = pd.DataFrame(summary_data)
-    st.dataframe(df_summary)
+    st.subheader("📘 Variable Thresholds per Cluster")
+    st.markdown(f"Each row shows the **average value** of a variable in a cluster, and its qualitative level relative to the **target variable = {target_var}**.")
 
-    # Step 3: Upload new dataset to assign to clusters
-    st.markdown("### 📄 Step 3: Upload Test Dataset for Cluster Assignment")
-    test_file = st.file_uploader("Upload a test dataset (raw input, no target)", type=["csv", "xlsx"])
+    st.dataframe(df_thresholds)
 
-    if test_file:
-        df_test = pd.read_csv(test_file) if test_file.name.endswith(".csv") else pd.read_excel(test_file)
+    # Optional: Show pivot table summary
+    if st.checkbox("📊 Show pivot summary per variable and level"):
+        pivot = pd.pivot_table(
+            df_thresholds,
+            values="Avg Value",
+            index=["Variable", "Level"],
+            columns="Target Level",
+            aggfunc="mean"
+        )
+        st.dataframe(pivot.style.background_gradient(axis=0, cmap="coolwarm"))
 
-        missing = [v for v in input_vars if v not in df_test.columns]
-        if missing:
-            st.error(f"❌ The following required input variables are missing from the test dataset: {missing}")
-        else:
-            df_input = df_test[input_vars]
-            df_norm = normalize(df_input)
-
-            # --- Build centroid vectors using same input variables only ---
-            centroid_vectors = []
-            for cid, row in df_centroids.iterrows():
-                vector = []
-                for var in input_vars:
-                    indices = [i for i, col in enumerate(feature_names) if col.startswith(var + "_t")]
-                    if indices:
-                        vector.append(np.mean([row[i] for i in indices]))
-                    else:
-                        vector.append(0.0)
-                centroid_vectors.append(vector)
-
-            # Assign test data to closest centroid
-            distances = euclidean_distances(df_norm.values, np.array(centroid_vectors))
-            assigned_clusters = np.argmin(distances, axis=1)
-
-            # Append results to test dataframe
-            df_result = df_test.copy()
-            df_result['Assigned_Cluster'] = assigned_clusters
-
-            st.subheader("📊 Cluster Assignment Results")
-            st.dataframe(df_result)
-
-            # Step 4: Export
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_result.to_excel(writer, index=False, sheet_name="Assigned Clusters")
-                df_summary.to_excel(writer, index=False, sheet_name="Cluster Summary")
-            output.seek(0)
-
-            st.download_button(
-                "📥 Download Assigned Cluster Data",
-                output,
-                file_name="cluster_assignment_output.xlsx"
-            )
