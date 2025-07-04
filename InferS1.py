@@ -70,14 +70,25 @@ if model_files and test_file:
 
     for mf in model_files:
         try:
-            df_c = pd.read_excel(mf, sheet_name="Centroids")
-            df_t = pd.read_excel(mf, sheet_name="Thresholds")
-            df_c["Source"] = mf.name
-            df_t["Source"] = mf.name
-            all_centroids.append(df_c)
-            all_thresholds.append(df_t)
+            xls = pd.ExcelFile(mf)
+            sheet_names = xls.sheet_names
+            df_combined = pd.read_excel(mf, sheet_name=sheet_names[0])
+            if {'Cluster', 'Variable', 'Level', 'Avg Value'}.issubset(df_combined.columns):
+                centroids = df_combined.pivot_table(index='Cluster', columns='Variable', values='Avg Value')
+                centroids = centroids.reset_index().fillna(0)
+                centroids["Source"] = mf.name
+                all_centroids.append(centroids)
+
+                thresholds = df_combined[['Cluster', 'Variable', 'Level']].copy()
+                thresholds["Source"] = mf.name
+                all_thresholds.append(thresholds)
+            else:
+                st.warning(f"⚠️ Required columns not found in {mf.name}. Expected: Cluster, Variable, Level, Avg Value")
         except Exception as e:
             st.warning(f"❌ Error in {mf.name}: {e}")
+
+    if not all_centroids or not all_thresholds:
+        st.stop()
 
     df_centroids_all = pd.concat(all_centroids, ignore_index=True)
     df_thresholds_all = pd.concat(all_thresholds, ignore_index=True)
@@ -90,23 +101,16 @@ if model_files and test_file:
     df_test_raw = df_test.copy()
     df_test = encode_categoricals(df_test)
 
-    centroid_features = [col for col in df_centroids_all.columns if col not in ["Source"]]
-    base_vars = extract_base_features(centroid_features)
-    time_steps = extract_time_steps(centroid_features)
-    window_size = len(time_steps)
-
-    usable_vars = [v for v in base_vars if v in df_test.columns]
+    centroid_features = [col for col in df_centroids_all.columns if col not in ["Source", "Cluster"]]
+    usable_vars = [v for v in centroid_features if v in df_test.columns]
     df_test = df_test[usable_vars]
     df_test_norm = normalize_data(df_test, usable_vars)
 
     df_test_expanded = []
     for _, row in df_test_norm.iterrows():
-        new_row = []
-        for var in usable_vars:
-            new_row.extend([row[var]] * window_size)
-        df_test_expanded.append(new_row)
+        df_test_expanded.append(row.values)
 
-    df_test_expanded = pd.DataFrame(df_test_expanded, columns=[col for col in df_centroids_all.columns if col != "Source"])
+    df_test_expanded = pd.DataFrame(df_test_expanded, columns=usable_vars)
 
     possible_targets = sorted(df_thresholds_all["Variable"].unique())
     target_var = st.selectbox("🎯 Select Target Variable to Infer", possible_targets)
@@ -118,7 +122,7 @@ if model_files and test_file:
         .reset_index().rename(columns={"Level": target_var})
     )
 
-    centroid_matrix = df_centroids_all.drop(columns=["Source"]).values
+    centroid_matrix = df_centroids_all[usable_vars].values
     dists = calculate_distances(df_test_expanded, centroid_matrix)
     inferred = infer_target_from_cluster(dists, df_target_summary, target_var)
 
