@@ -1,8 +1,9 @@
-# analyze_cluster_thresholds.py
+# cluster_threshold_analysis_app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+from io import BytesIO
 
 # ----------------- Utilities -----------------
 
@@ -28,62 +29,78 @@ def calculate_avg_by_variable(row, feature_names, base_vars):
         result[base] = avg_val
     return result
 
-def get_variable_thresholds(df_centroids, feature_names, base_vars, target_var):
-    """Return DataFrame showing value thresholds per variable and cluster, grouped by target level."""
+def get_variable_threshold_ranges(df_centroids, feature_names, base_vars, target_var):
+    """Return DataFrame showing thresholds per variable and cluster."""
     result_rows = []
 
     for cluster_id, row in df_centroids.iterrows():
+        # Calculate average values per variable
         avg_vals = calculate_avg_by_variable(row, feature_names, base_vars)
-        cluster_labels = {var: interpret_level(val) for var, val in avg_vals.items() if val is not None}
-        target_level = cluster_labels[target_var]
+
+        # Assign qualitative levels
+        levels = {var: interpret_level(val) for var, val in avg_vals.items() if val is not None}
+
+        # Group feature values by variable and level
         for var in base_vars:
             if var == target_var:
                 continue
+            indices = [i for i, col in enumerate(feature_names) if col.startswith(var + "_t")]
+            if not indices:
+                continue
+            values = [row[i] for i in indices]
+            min_val = round(np.min(values), 4)
+            max_val = round(np.max(values), 4)
+            mean_val = round(np.mean(values), 4)
             result_rows.append({
                 "Cluster": cluster_id,
-                "Target Level": target_level,
+                "Target Level": levels[target_var],
                 "Variable": var,
-                "Level": cluster_labels[var],
-                "Avg Value": round(avg_vals[var], 4)
+                "Level": levels[var],
+                "Min Value": min_val,
+                "Max Value": max_val,
+                "Avg Value": mean_val
             })
 
     return pd.DataFrame(result_rows)
 
 # ----------------- Streamlit App -----------------
 
-st.set_page_config("Cluster Variable Thresholds", layout="wide")
-st.title("📊 Analyze CNN-EQIC Clusters Relative to Target Variable")
+st.set_page_config("Cluster Threshold Explorer", layout="wide")
+st.title("📊 Cluster Variable Thresholds Explorer (from CNN-EQIC)")
 
 # Step 1: Upload CNN-EQIC Excel output
 cluster_file = st.file_uploader("📁 Upload CNN-EQIC Excel Output (must contain 'Centroids' sheet)", type=["xlsx"])
 
 if cluster_file:
-    df_centroids = pd.read_excel(cluster_file, sheet_name="Centroids")
-    feature_names = df_centroids.columns.tolist()
+    try:
+        df_centroids = pd.read_excel(cluster_file, sheet_name="Centroids")
+    except Exception as e:
+        st.error(f"❌ Failed to read Centroids sheet: {e}")
+    else:
+        feature_names = df_centroids.columns.tolist()
+        base_vars = extract_base_features(feature_names)
 
-    base_vars = extract_base_features(feature_names)
+        st.success("✅ Centroid data loaded.")
+        target_var = st.selectbox("🎯 Select the target variable to analyze", base_vars)
 
-    st.success("✅ Centroid data loaded.")
-    target_var = st.selectbox("🎯 Select the target variable to analyze", base_vars)
+        # Compute thresholds
+        df_thresholds = get_variable_threshold_ranges(df_centroids, feature_names, base_vars, target_var)
 
-    input_vars = [v for v in base_vars if v != target_var]
+        st.subheader("📘 Variable Threshold Ranges per Cluster")
+        st.markdown(f"This table shows the **min–max range and average** of each variable per cluster, grouped by the level of the **target variable = `{target_var}`**.")
+        st.dataframe(df_thresholds)
 
-    # Generate cluster-level summary
-    df_thresholds = get_variable_thresholds(df_centroids, feature_names, base_vars, target_var)
+        # Step 2: Export button
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_thresholds.to_excel(writer, index=False, sheet_name="Thresholds")
+        output.seek(0)
 
-    st.subheader("📘 Variable Thresholds per Cluster")
-    st.markdown(f"Each row shows the **average value** of a variable in a cluster, and its qualitative level relative to the **target variable = {target_var}**.")
-
-    st.dataframe(df_thresholds)
-
-    # Optional: Show pivot table summary
-    if st.checkbox("📊 Show pivot summary per variable and level"):
-        pivot = pd.pivot_table(
-            df_thresholds,
-            values="Avg Value",
-            index=["Variable", "Level"],
-            columns="Target Level",
-            aggfunc="mean"
+        st.download_button(
+            label="📥 Download Thresholds to Excel",
+            data=output,
+            file_name="cluster_variable_thresholds.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        st.dataframe(pivot.style.background_gradient(axis=0, cmap="coolwarm"))
+
 
